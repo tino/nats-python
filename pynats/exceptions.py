@@ -44,3 +44,7 @@ class NATSInvalidSchemeError(NATSConnectionError):
 
 class NATSReadSocketError(NATSError):
     pass
+
+
+class NATSTimeout(NATSError):
+    pass

@@ -1,11 +1,4 @@
-import io
-import json
-import re
-import socket
-import ssl
 from dataclasses import dataclass
-from typing import BinaryIO, Callable, Dict, Match, Optional, Pattern, Tuple, Union
-from urllib.parse import urlparse
 
 import pkg_resources
 
@@ -14,10 +7,20 @@ from pynats.exceptions import (
     NATSInvalidSchemeError,
     NATSReadSocketError,
     NATSTCPConnectionRequiredError,
+    NATSTimeout,
     NATSTLSConnectionRequiredError,
     NATSUnexpectedResponse,
 )
 from pynats.nuid import NUID
+
+import io
+import json
+import re
+import socket
+import ssl
+import time
+from typing import BinaryIO, Callable, Dict, Match, Optional, Pattern, Tuple, Union
+from urllib.parse import urlparse
 
 __all__ = ("NATSSubscription", "NATSMessage", "NATSClient")
 
@@ -96,7 +99,7 @@ class NATSConnOptions:
     tls_client_key: Optional[str] = None
     tls_hostname: Optional[str] = None
     tls_verify: bool = False
-    version: str = pkg_resources.get_distribution("nats-python").version
+    version: str = "custom"
     verbose: bool = False
     pedantic: bool = False
 
@@ -273,7 +276,9 @@ class NATSClient:
         self._send(PUB_OP, subject, reply, len(payload))
         self._send(payload)
 
-    def request(self, subject: str, *, payload: bytes = b"") -> NATSMessage:
+    def request(
+        self, subject: str, *, payload: bytes = b"", timeout: int = 1
+    ) -> NATSMessage:
         next_inbox = INBOX_PREFIX[:]
         next_inbox.extend(self._nuid.next_())
 
@@ -286,12 +291,16 @@ class NATSClient:
         sub = self.subscribe(reply_subject, callback=callback, max_messages=1)
         self.auto_unsubscribe(sub)
         self.publish(subject, payload=payload, reply=reply_subject)
-        self.wait(count=1)
+        self.wait(timeout=timeout)
 
-        return reply_messages[sub.sid]
+        try:
+            return reply_messages[sub.sid]
+        except KeyError:
+            raise NATSTimeout(f"No reply received within {timeout}s")
 
-    def wait(self, *, count=None) -> None:
+    def wait(self, *, count=None, timeout: int = 0) -> None:
         total = 0
+        stop_at = time.monotonic() + timeout if timeout else 0
         while True:
             command, result = self._recv(MSG_RE, PING_RE, OK_RE)
             if command is MSG_RE:
@@ -302,6 +311,8 @@ class NATSClient:
                     break
             elif command is PING_RE:
                 self._send(PONG_OP)
+            if stop_at and time.monotonic() > stop_at:
+                break
 
     def _send_connect_command(self) -> None:
         options = {
